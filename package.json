@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Chrome's TabStripModel, ported to TypeScript with React bindings. Pinning, tab groups, opener-aware activation, multi-select, drag-reorder.",
   "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/willwearing/chromium-tabs.git"
+  },
+  "homepage": "https://github.com/willwearing/chromium-tabs#readme",
+  "bugs": {
+    "url": "https://github.com/willwearing/chromium-tabs/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
