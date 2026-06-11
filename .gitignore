@@ -1,0 +1,12 @@
+# Chromium sparse checkout (reference only, ~1GB of git objects)
+chromium-reference/
+
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# Local-only artifacts and docs (hardcoded local paths)
+*.tgz
+AGENT_PROMPT.md
+LOCAL_INSTALL.md

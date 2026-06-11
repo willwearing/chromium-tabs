@@ -1,0 +1,165 @@
+/* Chrome-inspired tab strip. Override the variables to theme. */
+.ctabs-strip {
+  --ctabs-bg: #dee1e6;
+  --ctabs-tab-bg: transparent;
+  --ctabs-tab-active-bg: #ffffff;
+  --ctabs-tab-hover-bg: rgba(255, 255, 255, 0.55);
+  --ctabs-text: #3c4043;
+  --ctabs-radius: 8px;
+  --ctabs-height: 36px;
+
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 6px 8px 0;
+  background: var(--ctabs-bg);
+  overflow-x: auto;
+  scrollbar-width: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ctabs-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.ctabs-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ctabs-height);
+  min-width: 0;
+  max-width: 240px;
+  flex: 1 1 160px;
+  padding: 0 8px 0 12px;
+  border-radius: var(--ctabs-radius) var(--ctabs-radius) 0 0;
+  background: var(--ctabs-tab-bg);
+  color: var(--ctabs-text);
+  font: 12px/1.2 system-ui, sans-serif;
+  cursor: default;
+  position: relative;
+  touch-action: none;
+}
+
+.ctabs-tab:hover {
+  background: var(--ctabs-tab-hover-bg);
+}
+
+.ctabs-tab--active {
+  background: var(--ctabs-tab-active-bg);
+}
+
+.ctabs-tab--selected {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.ctabs-tab--pinned {
+  flex: 0 0 auto;
+  max-width: var(--ctabs-height);
+  padding: 0 10px;
+}
+
+/* Discarded tabs stay in the strip but their content is unloaded, shown
+   faded like Chrome's Memory Saver. */
+.ctabs-tab--discarded .ctabs-tab__content {
+  opacity: 0.55;
+}
+
+.ctabs-tab--dragging {
+  opacity: 0.85;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+
+.ctabs-tab--grouped::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--ctabs-group-color);
+}
+
+.ctabs-tab__content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctabs-tab__close {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.ctabs-tab__close:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.ctabs-group-header {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 2px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ctabs-group-color);
+  color: #fff;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  min-width: 14px;
+  min-height: 14px;
+  cursor: pointer;
+}
+
+.ctabs-group-header--collapsed {
+  opacity: 0.9;
+}
+
+.ctabs-new-tab {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 6px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ctabs-text);
+  font-size: 16px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.ctabs-new-tab:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ctabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ctabs-panels {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.ctabs-panel {
+  height: 100%;
+}
