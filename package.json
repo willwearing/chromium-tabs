@@ -26,6 +26,16 @@
       "import": "./dist/core/index.js",
       "require": "./dist/core/index.cjs"
     },
+    "./session": {
+      "types": "./dist/session/index.d.ts",
+      "import": "./dist/session/index.js",
+      "require": "./dist/session/index.cjs"
+    },
+    "./session/node": {
+      "types": "./dist/session/node.d.ts",
+      "import": "./dist/session/node.js",
+      "require": "./dist/session/node.cjs"
+    },
     "./styles.css": "./dist/styles.css"
   },
   "files": [
@@ -56,6 +66,7 @@
   },
   "devDependencies": {
     "@testing-library/react": "^16.1.0",
+    "@types/node": "^25.9.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "jsdom": "^25.0.1",

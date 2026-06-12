@@ -107,6 +107,37 @@ model.reconcile(
 
 Tabs absent from the list are removed (bypassing `canCloseTab` — the external state already decided), missing tabs are inserted at their position, data/pinned/order/activation converge. A second identical call fires no observer events, so it is safe to run on every store change. Reconcile-driven activations carry selection reason `'none'`, letting observers distinguish them from user gestures when writing model changes back to the store.
 
+## Session persistence (restore after refresh or restart)
+
+Opt-in port of Chrome's session restore (`components/sessions` + `chrome/browser/sessions`), shipped as a separate headless entry. Mutations stream into a command log; on the next load the log replays into the strip you had:
+
+```ts
+import { TabStripModel } from 'chromium-tabs/core'
+import { SessionService, WebStorageBackend } from 'chromium-tabs/session'
+
+const session = new SessionService<{ url: string }>({
+  storage: new WebStorageBackend({ key: 'my-app' }),
+})
+const model = new TabStripModel<{ url: string }>()
+
+const { restored } = await session.restoreInto(model)
+if (!restored) model.appendTab({ url: 'https://example.com' }) // first run
+// From here every insert/close/move/pin/group/activate is recorded.
+```
+
+Tab `data` is persisted automatically, so if your url lives there it round-trips with zero extra wiring. `data` must be JSON-serializable (or pass `serializeTabData`/`deserializeTabData`).
+
+It works the way Chrome's does:
+
+- **Command log, not snapshots.** Each mutation appends a `SessionCommand` (same command ids as `session_service_commands.cc`); buffered writes flush after 2.5s (`kSaveDelay`) and the log is rewritten from live state every 250 commands (`kWritesPerReset`). Replay is fault-tolerant: a torn or corrupt tail keeps everything before it.
+- **Current/last rotation.** Constructing a `SessionService` promotes the previous run's log to the "last session" slot; `restoreInto`/`getLastSession` read it. A run that dies before its first save doesn't clobber the restorable session.
+- **Restore order.** Tabs are recreated in visual order with pinned state, groups are re-formed with their title/color/collapse (ids relabeled, as Chrome does — you get a `groupIdMap`), then the selected tab activates. Pass `deferLoading: true` to restore background tabs discarded (Chrome's TabLoader behavior, pairs with `TabLifecycleManager`).
+- **Teardown safety.** With a synchronous backend the service flushes on `pagehide`, so state written milliseconds before a refresh survives it.
+
+Storage is pluggable via the `CommandStorageBackend` interface: `WebStorageBackend` (localStorage/sessionStorage), `InMemoryStorageBackend` (tests/SSR), or — for Electron/Node process restarts — `FileStorageBackend` from `chromium-tabs/session/node` (append-only JSONL, never bundled for the browser).
+
+Per-tab navigation history is available too, driven by your app exactly like `SessionTabHelper` drives Chrome's service: `session.navigateTab(id, { url })`, `setSelectedNavigationIndex` for back/forward, forward-history pruning on branch, capped at 6 entries either side of current on rewrite (`gMaxPersistNavigationCount`). Multiple strips persist as multiple windows: `session.attach(model, { windowId: 'left' })`.
+
 ## Headless usage
 
 ```ts
@@ -147,6 +178,10 @@ The port tracks Chromium `main` (see `PORTING_NOTES.md` for the algorithm-by-alg
 | `AddTabFlags` | `chrome/browser/ui/tabs/tab_enums.h` |
 | `TabLifecycleManager` (discarding) | `chrome/browser/resource_coordinator/tab_lifecycle_unit.cc`, `chrome/browser/performance_manager/policies/discard_eligibility_policy.h` |
 | `<TabPanels>` keep-alive + `useTabVisibility` | behavioral equivalent of Chrome keeping background pages alive + visibility signals |
+| `SessionService` (session persistence) | `chrome/browser/sessions/session_service_base.{h,cc}`, `session_service.{h,cc}` |
+| `SessionCommand` log + replay | `components/sessions/core/session_service_commands.cc` |
+| `CommandStorageManager` + backends | `components/sessions/core/command_storage_manager.cc`, `command_storage_backend.cc` |
+| `restoreSessionWindow` | `chrome/browser/sessions/session_restore.cc` |
 
 Not ported: split tabs, async unload handlers (closes are synchronous; veto with `canCloseTab`).
 
@@ -154,7 +189,7 @@ Not ported: split tabs, async unload handlers (closes are synchronous; veto with
 
 ```sh
 bun install
-bun run test        # vitest, 91 tests
+bun run test        # vitest, 160 tests
 bun run typecheck
 bun run build       # tsup -> dist/
 ```
