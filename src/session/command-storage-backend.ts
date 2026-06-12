@@ -24,6 +24,16 @@ export interface ReadCommandsResult {
 
 export interface CommandStorageBackend {
   /**
+   * Identifies this storage area for cross-realm singleton coordination —
+   * the analog of Chrome naming its ProcessSingleton after the user data
+   * directory (process_singleton.h:45). Backends that can be reached from
+   * several realms at once (web storage) must provide it; backends that
+   * cannot (in-memory) leave it undefined and the service acts as sole
+   * owner.
+   */
+  readonly profileLockName?: string
+
+  /**
    * Persists commands to the current session. With `truncate` the current
    * session is replaced wholesale (the pending commands are a complete
    * snapshot); otherwise they are appended. Mirrors

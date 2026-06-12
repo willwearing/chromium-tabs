@@ -27,6 +27,9 @@ interface Envelope {
 }
 
 export class WebStorageBackend implements CommandStorageBackend {
+  /** Two realms over the same key contend for the same profile singleton. */
+  readonly profileLockName: string
+
   private readonly storage_: Storage
   private readonly currentKey_: string
   private readonly lastKey_: string
@@ -40,6 +43,7 @@ export class WebStorageBackend implements CommandStorageBackend {
       throw new Error('WebStorageBackend: no Storage available; pass options.storage')
     }
     this.storage_ = storage
+    this.profileLockName = `chromium-tabs-profile/${key}`
     this.currentKey_ = `${key}/current`
     this.lastKey_ = `${key}/last`
   }

@@ -6,6 +6,13 @@ export {
   type CommandStorageManagerOptions,
 } from './command-storage-manager'
 export { InMemoryStorageBackend } from './backends/in-memory'
+export {
+  WebLocksProcessSingleton,
+  createDefaultProcessSingleton,
+  type ProcessSingleton,
+  type ProcessSingletonResult,
+  type WebLocksProcessSingletonOptions,
+} from './process-singleton'
 export { WebStorageBackend, type WebStorageBackendOptions } from './backends/web-storage'
 export {
   SessionCommandId,

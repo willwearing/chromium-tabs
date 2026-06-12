@@ -68,6 +68,8 @@ algorithms match.
 | `chrome/browser/sessions/session_service.cc` (`SetSelectedTabInWindow` dedupe, `CommitPendingCloses`) | `session-service.ts` (`maybeEmitSelectedTab_`, `markWindowClosed`) |
 | `SessionTabHelper` → `SessionService` navigation plumbing | app-driven `navigateTab` / `updateTabNavigation` / `setSelectedNavigationIndex` / `pruneTabNavigations` |
 | `chrome/browser/sessions/session_restore.cc` (`RestoreTabsToBrowser`, group id relabeling, TabLoader deferred loads) | `session-restore.ts` (`restoreSessionWindow`, `deferLoading` discards background tabs) |
+| `chrome/browser/process_singleton.h` (one process per profile, h:45; NotifyResult h:85; claim retries, process_singleton_posix.cc:137-140) | `process-singleton.ts` — `WebLocksProcessSingleton`: a storage area is a profile, claimed once at boot via an exclusive Web Lock with bounded retries; losers become secondaries instead of exiting |
+| `SetSavingEnabled` / `is_saving_enabled_` (session_service_base.cc:877, guards at cc:790/cc:397) | `setSavingEnabled_` / `savingEnabled_` — a secondary keeps saving disabled forever; the owner's grant calls SetSavingEnabled(true) → ScheduleResetCommands, snapshotting models attached while the claim was pending |
 
 Key algorithm clones: `FindClosestNavigationWithIndex` (cc:339),
 `ProcessTabNavigationPathPrunedCommand` (cc:489), `CreateTabsAndWindows`
@@ -97,6 +99,14 @@ Intended deviations from Chrome:
 - **`lastActiveAt` is persisted but not re-injected** on restore (the model
   owns that field); it is exposed on `SessionTab.lastActiveTime` for
   app-level use.
+- **Secondaries stand down instead of exiting.** Chrome's losing process
+  gets PROCESS_NOTIFIED and terminates; a losing browser tab cannot
+  terminate, so it runs as a SessionService with saving permanently
+  disabled (restores nothing, records nothing). Like Chrome, ownership is
+  claimed at startup only — no mid-life takeover; a refresh of the realm
+  re-attempts the claim. Apps wanting per-browser-tab persistence use one
+  storage key per realm (the `--user-data-dir` move), documented in the
+  README.
 
 ## Deliberately not ported
 

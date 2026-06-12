@@ -138,6 +138,25 @@ Storage is pluggable via the `CommandStorageBackend` interface: `WebStorageBacke
 
 Per-tab navigation history is available too, driven by your app exactly like `SessionTabHelper` drives Chrome's service: `session.navigateTab(id, { url })`, `setSelectedNavigationIndex` for back/forward, forward-history pruning on branch, capped at 6 entries either side of current on rewrite (`gMaxPersistNavigationCount`). Multiple strips persist as multiple windows: `session.attach(model, { windowId: 'left' })`.
 
+### Multiple browser tabs of the same app
+
+Two browser tabs booting the same wiring are two JS realms over one storage key — the web's version of two Chrome processes sharing a profile directory, which Chrome forbids outright (`ProcessSingleton` is "named according to the user data directory, so we can be sure that no more than one copy of the application can be running at once"). This library ports that rule: a storage key is a profile, and exactly one realm owns it, coordinated through Web Locks (auto-released when the realm dies, like the OS reclaiming Chrome's `SingletonLock`).
+
+The first realm to boot becomes the **owner**: it rotates, restores, and records. Realms that boot while the profile is owned become **secondaries**: they restore nothing (`restored: false`, `ownership: 'secondary'`), record nothing, and never touch the owner's log. There is no mid-life takeover — like Chrome, the claim happens at startup; once the owner is gone, the next realm to boot (including a refresh of a secondary) claims the profile and continues where it left off. Without Web Locks (SSR, Node, older browsers) a service is simply the sole owner, which is the single-realm behavior.
+
+If you want every browser tab to persist its own strip, give each realm its own profile — the same move as running Chrome with separate `--user-data-dir`s:
+
+```ts
+let profile = sessionStorage.getItem('tabs-profile') // survives refresh, per browser tab
+if (!profile) {
+  profile = `my-app/${crypto.randomUUID()}`
+  sessionStorage.setItem('tabs-profile', profile)
+}
+const session = new SessionService({ storage: new WebStorageBackend({ key: profile }) })
+```
+
+"Duplicate tab" copies sessionStorage, so the duplicate wakes up holding the same profile — the singleton resolves that too: the duplicate becomes a secondary of that profile instead of corrupting it. (Garbage-collecting profiles abandoned by closed tabs is the app's call; the library can't know a browser tab is gone for good.)
+
 ## Headless usage
 
 ```ts
@@ -189,7 +208,7 @@ Not ported: split tabs, async unload handlers (closes are synchronous; veto with
 
 ```sh
 bun install
-bun run test        # vitest, 160 tests
+bun run test        # vitest, 172 tests
 bun run typecheck
 bun run build       # tsup -> dist/
 ```

@@ -26,6 +26,11 @@ import type { TabStripModel } from '../core/tab-strip-model'
 import { NO_TAB, type Tab, type TabId } from '../core/types'
 import type { CommandStorageBackend } from './command-storage-backend'
 import { CommandStorageManager } from './command-storage-manager'
+import {
+  createDefaultProcessSingleton,
+  type ProcessSingleton,
+  type ProcessSingletonResult,
+} from './process-singleton'
 import { restoreSessionWindow, type RestoreOptions, type RestoreResult } from './session-restore'
 import {
   SessionCommandId,
@@ -87,6 +92,16 @@ export interface SessionServiceOptions<T> {
   flushOnPageHide?: boolean
   /** Observer-side failures are reported here instead of thrown. */
   onError?: (error: unknown) => void
+  /**
+   * Cross-realm coordination for the storage area — the ProcessSingleton
+   * port (process_singleton.h). Exactly one realm (browser tab) owns a
+   * profile; the rest become secondaries that neither rotate, write, nor
+   * restore it. Omit for the default: Web Locks keyed by
+   * storage.profileLockName when the platform has them, else sole ownership.
+   * Pass null to force sole ownership, or your own implementation for
+   * tests/custom environments.
+   */
+  processSingleton?: ProcessSingleton | null
 }
 
 export interface AttachOptions {
@@ -104,6 +119,12 @@ export interface RestoreIntoResult extends RestoreResult {
   restored: boolean
   /** The full snapshot, for callers that also restore other windows. */
   snapshot: SessionSnapshot
+  /**
+   * 'owner' when this realm persists the session; 'secondary' when another
+   * realm already owns the storage area — this service then restored nothing
+   * and will record nothing.
+   */
+  ownership: ProcessSingletonResult
 }
 
 interface WindowEntry<T> {
@@ -128,7 +149,10 @@ export class SessionService<T = unknown> {
   private readonly writesPerReset_: number
   private readonly maxPersistedNavigations_: number
   private readonly onError_: (error: unknown) => void
-  /** Resolves once the previous session has been rotated to the last slot. */
+  /**
+   * Resolves once the profile claim is settled and, for the owner, the
+   * previous session has been rotated to the last slot.
+   */
   private readonly ready_: Promise<void>
 
   private readonly windows_ = new Map<SessionWindowId, WindowEntry<T>>()
@@ -140,6 +164,10 @@ export class SessionService<T = unknown> {
   private rebuildOnNextSave_ = false
   private pageHideListener_: (() => void) | null = null
   private disposed_ = false
+  private readonly singleton_: ProcessSingleton | null
+  private ownership_: 'pending' | ProcessSingletonResult = 'pending'
+  /** Mirrors is_saving_enabled_ (session_service_base.h:337). */
+  private savingEnabled_ = false
 
   constructor(options: SessionServiceOptions<T>) {
     this.storage_ = options.storage
@@ -149,32 +177,42 @@ export class SessionService<T = unknown> {
     this.maxPersistedNavigations_ = options.maxPersistedNavigations ?? MAX_PERSISTED_NAVIGATIONS
     this.onError_ = options.onError ?? ((error) => console.error('chromium-tabs session:', error))
 
-    // Rotate the previous session into the last slot before anything else
-    // can touch storage. Chrome's backend resolves its last-session file the
-    // same way, before the first truncating write of the new session. With a
-    // synchronous backend this completes right here; with an async one it
-    // gates the manager's write queue.
-    let rotation: void | Promise<void>
-    try {
-      rotation = this.storage_.moveCurrentSessionToLastSession()
-    } catch (error) {
-      this.onError_(error)
-      rotation = undefined
+    // Claim the profile before touching storage — the ProcessSingleton port
+    // (process_singleton.h:45). Exactly one realm may rotate and write a
+    // given storage area; everyone else becomes a read-nothing,
+    // write-nothing secondary, the way a second Chrome launch stands down
+    // when the profile is already owned.
+    this.singleton_ =
+      options.processSingleton !== undefined
+        ? options.processSingleton
+        : createDefaultProcessSingleton(this.storage_.profileLockName)
+
+    let gate: Promise<void> | null = null
+    if (this.singleton_ === null) {
+      // Sole instance (no lock manager on this platform, in-memory backend,
+      // or explicit opt-out): rotate synchronously, exactly the pre-singleton
+      // behavior. Keeps the synchronous fast path (pagehide flush) intact.
+      this.ownership_ = 'owner'
+      gate = this.rotateNow_()
+      this.ready_ = gate ?? Promise.resolve()
+    } else {
+      gate = this.singleton_.acquire().then(async (result) => {
+        this.ownership_ = result
+        if (result === 'owner' && !this.disposed_) {
+          const rotation = this.rotateNow_()
+          if (rotation) await rotation
+          // SetSavingEnabled(true) — schedules the full snapshot of any
+          // models attached while the claim was pending.
+          this.setSavingEnabled_(true)
+        }
+      })
+      this.ready_ = gate
     }
-    const rotationPending = rotation && typeof rotation.then === 'function' ? rotation : null
-    this.ready_ = rotationPending
-      ? rotationPending.then(
-          () => undefined,
-          (error) => {
-            this.onError_(error)
-          },
-        )
-      : Promise.resolve()
 
     this.manager_ = new CommandStorageManager({
       backend: this.storage_,
       saveDelayMs: options.saveDelayMs,
-      ...(rotationPending ? { ready: this.ready_ } : {}),
+      ...(gate ? { ready: gate } : {}),
       delegate: {
         // RebuildCommandsIfRequired (session_service_base.cc:856).
         onWillSaveCommands: () => {
@@ -187,12 +225,55 @@ export class SessionService<T = unknown> {
       },
     })
 
+    if (this.singleton_ === null) this.setSavingEnabled_(true)
+
     const flushOnPageHide = options.flushOnPageHide ?? true
     if (flushOnPageHide && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       this.pageHideListener_ = () => {
         void this.saveNow()
       }
       window.addEventListener('pagehide', this.pageHideListener_)
+    }
+  }
+
+  /**
+   * Which side of the profile claim this service landed on: 'pending' until
+   * resolved, then 'owner' (this realm persists the session) or 'secondary'
+   * (another realm owns the storage area; this service records and restores
+   * nothing). Settled by the time getLastSession/restoreInto resolve.
+   */
+  get ownership(): 'pending' | ProcessSingletonResult {
+    return this.ownership_
+  }
+
+  /** Starts rotation; returns the pending promise when async, else null. */
+  private rotateNow_(): Promise<void> | null {
+    let rotation: void | Promise<void>
+    try {
+      rotation = this.storage_.moveCurrentSessionToLastSession()
+    } catch (error) {
+      this.onError_(error)
+      rotation = undefined
+    }
+    if (rotation && typeof rotation.then === 'function') {
+      return rotation.then(
+        () => undefined,
+        (error) => {
+          this.onError_(error)
+        },
+      )
+    }
+    return null
+  }
+
+  /** Port of SetSavingEnabled (session_service_base.cc:877). */
+  private setSavingEnabled_(enabled: boolean): void {
+    if (this.savingEnabled_ === enabled) return
+    this.savingEnabled_ = enabled
+    if (!this.savingEnabled_) {
+      this.manager_.clearPendingCommands()
+    } else {
+      this.scheduleResetCommands()
     }
   }
 
@@ -360,6 +441,12 @@ export class SessionService<T = unknown> {
   async getLastSession(): Promise<SessionSnapshot> {
     this.checkNotDisposed_()
     await this.ready_
+    // A secondary never reads the profile, just as a PROCESS_NOTIFIED Chrome
+    // launch never opens it — restoring here would duplicate the owner's
+    // live session into this realm.
+    if (this.ownership_ === 'secondary') {
+      return { windows: [], activeWindowId: null, errorReading: false }
+    }
     let commands: readonly SessionCommand[]
     let errorReading: boolean
     try {
@@ -417,7 +504,12 @@ export class SessionService<T = unknown> {
     }
 
     this.attach(model, { windowId })
-    return { ...result, restored: window !== undefined, snapshot }
+    return {
+      ...result,
+      restored: window !== undefined,
+      snapshot,
+      ownership: this.ownership_ === 'secondary' ? 'secondary' : 'owner',
+    }
   }
 
   // Persistence control /////////////////////////////////////////////////////
@@ -438,6 +530,8 @@ export class SessionService<T = unknown> {
    * BuildCommandsFromBrowsers (cc:767).
    */
   scheduleResetCommands(): void {
+    // cc:397: never build commands while saving is disabled.
+    if (!this.savingEnabled_) return
     this.manager_.setPendingReset(true)
     this.manager_.clearPendingCommands()
     this.rebuildOnNextSave_ = false
@@ -460,6 +554,8 @@ export class SessionService<T = unknown> {
       this.pageHideListener_ = null
     }
     this.manager_.dispose()
+    // Cleanup() port: frees the profile for the next realm to claim at boot.
+    this.singleton_?.release()
   }
 
   // Internals ///////////////////////////////////////////////////////////////
@@ -555,7 +651,8 @@ export class SessionService<T = unknown> {
 
   /** Mirrors SessionServiceBase::ScheduleCommand (session_service_base.cc:788). */
   private scheduleCommand_(command: SessionCommand): void {
-    if (this.disposed_) return
+    // cc:790: if (!is_saving_enabled_) return.
+    if (this.disposed_ || !this.savingEnabled_) return
     if (this.replacePendingCommand_(command)) return
     const closing = isClosingCommand(command)
     this.manager_.scheduleCommand(command)
