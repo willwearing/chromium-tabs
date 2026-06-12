@@ -52,13 +52,75 @@ focus. The mapping:
 | OS memory-pressure trigger | not exposed to JS reliably → deterministic `maxLoadedTabs` budget (default 10), enforced on a microtask after model changes (Chrome also defers via posted tasks) |
 | Renderer-detected protections: audio, form input, user edits, capture, PiP | not detectable generically from outside the content → folded into the `canDiscardTab` app veto |
 
+## Session persistence (`components/sessions` port, `src/session/`)
+
+Modeled on Chrome's session restore stack at the same pinned commit. Commands
+are JSON objects instead of binary pickles; ids, semantics, constants, and
+algorithms match.
+
+| Chromium | This package |
+|---|---|
+| `components/sessions/core/session_service_commands.cc` (command ids 0–34, builders, `RestoreSessionFromCommands`) | `session-service-commands.ts` — same numeric ids; browser-only ids (bounds, UA override, extension app id, session storage, splits) left reserved |
+| `components/sessions/core/command_storage_manager.cc` (`kSaveDelay` 2500ms, `pending_reset_`, `ScheduleCommand`/`AppendRebuildCommand`/`EraseCommand`/`SwapCommand`) | `command-storage-manager.ts`, sequenced-task-runner semantics via a promise queue with a synchronous fast path |
+| `components/sessions/core/command_storage_backend.{h,cc}` (current vs last session, rotation, torn-write tolerance) | `command-storage-backend.ts` interface + `WebStorageBackend` / `InMemoryStorageBackend` / `FileStorageBackend` (`session/node.ts`, JSONL) |
+| `components/sessions/core/session_types.h` (`SessionTab`/`SessionWindow`/`SerializedNavigationEntry`) | `session-types.ts`, trimmed to headless-relevant fields |
+| `chrome/browser/sessions/session_service_base.cc` (`kWritesPerReset` 250 at cc:78, `ScheduleCommand` reset guard cc:788, `BuildCommandsForTab` cc:592, `rebuild_on_next_save_`) | `session-service.ts` |
+| `chrome/browser/sessions/session_service.cc` (`SetSelectedTabInWindow` dedupe, `CommitPendingCloses`) | `session-service.ts` (`maybeEmitSelectedTab_`, `markWindowClosed`) |
+| `SessionTabHelper` → `SessionService` navigation plumbing | app-driven `navigateTab` / `updateTabNavigation` / `setSelectedNavigationIndex` / `pruneTabNavigations` |
+| `chrome/browser/sessions/session_restore.cc` (`RestoreTabsToBrowser`, group id relabeling, TabLoader deferred loads) | `session-restore.ts` (`restoreSessionWindow`, `deferLoading` discards background tabs) |
+| `chrome/browser/process_singleton.h` (one process per profile, h:45; NotifyResult h:85; claim retries, process_singleton_posix.cc:137-140) | `process-singleton.ts` — `WebLocksProcessSingleton`: a storage area is a profile, claimed once at boot via an exclusive Web Lock with bounded retries; losers become secondaries instead of exiting |
+| `SetSavingEnabled` / `is_saving_enabled_` (session_service_base.cc:877, guards at cc:790/cc:397) | `setSavingEnabled_` / `savingEnabled_` — a secondary keeps saving disabled forever; the owner's grant calls SetSavingEnabled(true) → ScheduleResetCommands, snapshotting models attached while the claim was pending |
+
+Key algorithm clones: `FindClosestNavigationWithIndex` (cc:339),
+`ProcessTabNavigationPathPrunedCommand` (cc:489), `CreateTabsAndWindows`
+replay with stop-on-malformed-command (cc:521), `AddTabsToWindows` selected-
+navigation remap (cc:404), `SortTabsBasedOnVisualOrderAndClear` (cc:372),
+`UpdateSelectedTabIndex` visual-index→position remap (cc:265),
+`ReplacePendingCommand` (cc:1344).
+
+Intended deviations from Chrome:
+
+- **Exact visual indices.** On inserts/moves/removals the service re-emits
+  `SetTabIndexInWindow` for the affected index range, so replay order is
+  exact without depending on periodic rewrites. Chrome tolerates stale
+  indices. In-buffer command swaps (a broadened `ReplacePendingCommand`)
+  keep the cost flat.
+- **Data-only tabs restore.** Chrome drops tabs with no navigations; we keep
+  them when a `data` payload exists, since data-only persistence is this
+  library's zero-config mode.
+- **Tab ids are preserved by default** on restore (they're strings chosen by
+  the app and used as React keys). Chrome regenerates ids; pass
+  `preserveTabIds: false` for that behavior. Group ids are always relabeled,
+  matching Chrome.
+- **No crash-bubble flow.** Chrome gates restoring a crashed session behind
+  user acknowledgment (`ExitTypeService`); here the last session is always
+  restorable, and a run that dies before its first save leaves the previous
+  log in place.
+- **`lastActiveAt` is persisted but not re-injected** on restore (the model
+  owns that field); it is exposed on `SessionTab.lastActiveTime` for
+  app-level use.
+- **Secondaries stand down instead of exiting.** Chrome's losing process
+  gets PROCESS_NOTIFIED and terminates; a losing browser tab cannot
+  terminate, so it runs as a SessionService with saving permanently
+  disabled (restores nothing, records nothing). Like Chrome, ownership is
+  claimed at startup only — no mid-life takeover; a refresh of the realm
+  re-attempts the claim. Apps wanting per-browser-tab persistence use one
+  storage key per realm (the `--user-data-dir` move), documented in the
+  README.
+
 ## Deliberately not ported
 
 - **Split tabs** (Chrome 2024+ side-by-side view): large surface, niche. Excluded everywhere it appears.
 - **WebContents / Profile / delegate plumbing**: tabs carry a generic `data: T` payload instead.
 - **Unload handlers, policy close-blocking, modal UI, read-later, audio mute, metrics, context-menu command table**: browser concerns, not tab-strip logic. `IsTabClosable` survives as an optional `canClose` callback.
 - **Detached collections** (cross-window group drags): single-strip library.
+- **TabRestoreService** (recently-closed entries, reopen-closed-tab): natural
+  follow-up on top of the same command infrastructure; not in this pass.
+- **Session crypto (OSCrypt)**, SNSS binary format, and the
+  `Apps`/`AppSessionService` variants.
 
 ## Behavioral deviations
 
-None intended. Where Chrome CHECKs (crashes), we throw `RangeError`/`Error`.
+None intended in the core strip (the session layer's intended deviations are
+listed in its section above). Where Chrome CHECKs (crashes), we throw
+`RangeError`/`Error`.

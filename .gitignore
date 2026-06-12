@@ -10,3 +10,6 @@ dist/
 *.tgz
 AGENT_PROMPT.md
 LOCAL_INSTALL.md
+
+# Agent working notes
+tasks/
